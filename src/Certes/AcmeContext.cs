@@ -283,19 +283,24 @@ namespace Certes
             var pkcs12Store = new Pkcs12Store(memoryStream, password.ToCharArray());
 
             var alias = pkcs12Store.Aliases.Cast<string>()
-                .FirstOrDefault(currentAlias => pkcs12Store.IsCertificateEntry(currentAlias));
+                .FirstOrDefault(currentAlias => pkcs12Store.IsCertificateEntry(currentAlias) || pkcs12Store.IsKeyEntry(currentAlias));
 
             var certEntry = pkcs12Store.GetCertificate(alias);
             var cert = certEntry.Certificate;
             var akiExtension = cert.GetExtensionValue(X509Extensions.AuthorityKeyIdentifier);
             var base64Aki = Convert.ToBase64String(akiExtension.GetOctets()).Replace("=", string.Empty);
 
-            var aki = AuthorityKeyIdentifier.GetInstance(Asn1Object.FromByteArray(akiExtension.GetOctets()));
-            var serialNumber = aki.AuthorityCertSerialNumber;
-            var serialNumberBytes = serialNumber.ToByteArray().Skip(2).ToArray();
-            var serialNumberDer = BitConverter.ToString(serialNumberBytes).Replace("=", string.Empty);
-
-            var ariCertId = $"{base64Aki}.{serialNumberDer}";
+            var serialNumber = cert.SerialNumber;
+            byte[] serialNumberDer;
+            using (var derStream = new MemoryStream())
+            {
+                var derOutputStream = Asn1OutputStream.Create(derStream);
+                derOutputStream.WriteObject(new DerInteger(serialNumber));
+                serialNumberDer = derStream.ToArray().Skip(2).ToArray(); //Skip the first two bytes
+            }
+            var base64SerialNumber = Convert.ToBase64String(serialNumberDer).Replace("=", string.Empty);
+            
+            var ariCertId = $"{base64Aki}.{base64SerialNumber}";
             return ariCertId;
         }
     }
