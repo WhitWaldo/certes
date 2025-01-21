@@ -1,10 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Certes.Acme;
 using Certes.Acme.Resource;
 using Certes.Jws;
+using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Pkcs;
+using Directory = Certes.Acme.Resource.Directory;
 using Identifier = Certes.Acme.Resource.Identifier;
 using IdentifierType = Certes.Acme.Resource.IdentifierType;
 
@@ -178,10 +183,10 @@ namespace Certes
         }
 
         /// <summary>
-        /// Creates a new the order.
+        /// Creates a new order.
         /// </summary>
         /// <param name="identifiers">The identifiers.</param>
-        /// <param name="notBefore">Th value of not before field for the certificate.</param>
+        /// <param name="notBefore">The value of not before field for the certificate.</param>
         /// <param name="notAfter">The value of not after field for the certificate.</param>
         /// <returns>
         /// The order context created.
@@ -195,6 +200,35 @@ namespace Certes
                 Identifiers = identifiers
                     .Select(id => new Identifier { Type = IdentifierType.Dns, Value = id })
                     .ToArray(),
+                NotBefore = notBefore,
+                NotAfter = notAfter,
+            };
+
+            var order = await HttpClient.Post<Order>(this, endpoint, body, true);
+            return new OrderContext(this, order.Location);
+        }
+
+        /// <summary>
+        /// Creates a new order replacing an existing certificate as part of an ARI renewal in the suggested window.
+        /// </summary>
+        /// <param name="identifiers">The identifiers.</param>
+        /// <param name="ariCertificateId">The identifier of the certificate being renewed as part
+        /// of the ARI renewal suggestion window.</param>
+        /// <param name="notBefore">The value of not before field for the certificate.</param>
+        /// <param name="notAfter">The value of not after field for the certificate.</param>
+        /// <returns>
+        /// The order context created.
+        /// </returns>
+        public async Task<IOrderContext> NewOrder(IList<string> identifiers, string ariCertificateId, DateTimeOffset? notBefore = null, DateTimeOffset? notAfter = null)
+        {
+            var endpoint = await this.GetResourceUri(d => d.NewOrder);
+
+            var body = new Order
+            {
+                Identifiers = identifiers
+                    .Select(id => new Identifier { Type = IdentifierType.Dns, Value = id })
+                    .ToArray(),
+                Replaces = ariCertificateId,
                 NotBefore = notBefore,
                 NotAfter = notAfter,
             };
@@ -236,5 +270,33 @@ namespace Certes
         /// </returns>
         public IAuthorizationContext Authorization(Uri location)
             => new AuthorizationContext(this, location);
+
+        /// <summary>
+        /// Gets the certificate ID for an ACME renewal information request.
+        /// </summary>
+        /// <param name="certificate">The issued PFX certificate bytes to create the request from.</param>
+        /// <param name="password">The password for the issued PFX certificate.</param>
+        /// <returns>The ARI certificate ID to use in the renewal info URL and order.</returns>
+        public static string GetAriCertificateId(byte[] certificate, string password)
+        {
+            using var memoryStream = new MemoryStream(certificate);
+            var pkcs12Store = new Pkcs12Store(memoryStream, password.ToCharArray());
+
+            var alias = pkcs12Store.Aliases.Cast<string>()
+                .FirstOrDefault(currentAlias => pkcs12Store.IsCertificateEntry(currentAlias));
+
+            var certEntry = pkcs12Store.GetCertificate(alias);
+            var cert = certEntry.Certificate;
+            var akiExtension = cert.GetExtensionValue(X509Extensions.AuthorityKeyIdentifier);
+            var base64Aki = Convert.ToBase64String(akiExtension.GetOctets()).Replace("=", string.Empty);
+
+            var aki = AuthorityKeyIdentifier.GetInstance(Asn1Object.FromByteArray(akiExtension.GetOctets()));
+            var serialNumber = aki.AuthorityCertSerialNumber;
+            var serialNumberBytes = serialNumber.ToByteArray().Skip(2).ToArray();
+            var serialNumberDer = BitConverter.ToString(serialNumberBytes).Replace("=", string.Empty);
+
+            var ariCertId = $"{base64Aki}.{serialNumberDer}";
+            return ariCertId;
+        }
     }
 }
